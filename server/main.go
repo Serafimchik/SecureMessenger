@@ -31,7 +31,8 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		fmt.Printf("Получено сообщение: %s\n", message)
 
-		err = conn.WriteMessage(websocket.TextMessage, message)
+		response := "ответ:" + string(message)
+		err = conn.WriteMessage(websocket.TextMessage, []byte(response))
 		if err != nil {
 			log.Println("Ошибка при отправке сообщения:", err)
 			break
