@@ -4,7 +4,7 @@ COPY . /github.com/Serafimchik/SecureMessenger/server/
 WORKDIR /github.com/Serafimchik/SecureMessenger/server/
 
 RUN go mod download
-RUN go build -o ./bin/crud_server main.go
+RUN go build -o ./bin/crud_server cmd/main.go
 
 FROM alpine:latest
 
