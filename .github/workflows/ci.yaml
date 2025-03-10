@@ -57,4 +57,10 @@ jobs:
             docker rm $CONTAINER_NAME
             
             # Run a new container from a new image
-            docker run -d -p 8080:8080 --name $CONTAINER_NAME -t $REGISTRY/$IMAGE_NAME:$TAG_NAME
+            docker run -d -p 8080:8080 --name $CONTAINER_NAME \
+              -e PG_USER=${{ secrets.PG_USER }} \
+              -e PG_PASSWORD=${{ secrets.PG_PASSWORD }} \
+              -e PG_DATABASE_NAME=${{ secrets.PG_DATABASE_NAME }} \
+              -e DB_HOST=server-pg-1
+              -e DB_PORT=5432 \
+              $REGISTRY/$IMAGE_NAME:$TAG_NAME
