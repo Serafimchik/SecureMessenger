@@ -12,7 +12,7 @@ var Pool *pgxpool.Pool
 func InitDB() {
 	ctx := context.Background()
 
-	dbDSN := "host=host.docker.internal  port=5432 dbname=note user=note-user password=note-password"
+	dbDSN := "host=192.168.0.3  port=5432 dbname=note user=note-user password=note-password"
 
 	pool, err := pgxpool.Connect(ctx, dbDSN)
 	if err != nil {
