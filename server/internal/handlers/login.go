@@ -19,23 +19,61 @@ func Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	err := json.NewDecoder(r.Body).Decode(&loginData)
-	if err != nil {
-		http.Error(w, "Incorrect data", http.StatusBadRequest)
+	if err != nil || loginData.Email == "" || loginData.Password == "" {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
 
-	user, err := userService.GetUserByEmail(loginData.Email)
+	ctx := r.Context()
+
+	user, err := userService.GetUserByEmail(ctx, loginData.Email)
 	if err != nil {
-		http.Error(w, "User was not found", http.StatusUnauthorized)
+		if err.Error() == "user not found" {
+			log.Printf("User with email %s not found", loginData.Email)
+			http.Error(w, "User not found", http.StatusUnauthorized)
+			return
+		}
+		log.Printf("Error fetching user by email: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("Checking password: %s, hash: %s", loginData.Password, user.PasswordHash)
+	if user.LockedUntil != nil && time.Now().Before(*user.LockedUntil) {
+		log.Printf("Account is locked until %v for user %d", user.LockedUntil, user.ID)
+		http.Error(w, "Account is temporarily locked due to multiple failed login attempts", http.StatusUnauthorized)
+		return
+	}
 
 	if err := utils.CheckPasswordHash(loginData.Password, user.PasswordHash); err != nil {
-		log.Printf("Password verification failed: %v", err)
+		log.Printf("Password verification failed for user %d", user.ID)
+
+		updatedUser, err := userService.IncrementFailedLoginAttempts(ctx, user.ID)
+		if err != nil {
+			log.Printf("Error incrementing failed login attempts for user %d: %v", user.ID, err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		if updatedUser.FailedAttempts >= 5 {
+			err = userService.LockAccount(ctx, updatedUser.ID, 5*time.Minute)
+			if err != nil {
+				log.Printf("Error locking account for user %d: %v", updatedUser.ID, err)
+				http.Error(w, "Internal server error", http.StatusInternalServerError)
+				return
+			}
+
+			log.Printf("Account locked for user %d for 5 minutes", updatedUser.ID)
+			http.Error(w, "Account is temporarily locked due to multiple failed login attempts", http.StatusUnauthorized)
+			return
+		}
+
 		http.Error(w, "Invalid email or password", http.StatusUnauthorized)
 		return
+	}
+
+	err = userService.ResetFailedLoginAttempts(ctx, user.ID)
+	if err != nil {
+		log.Printf("Error resetting failed login attempts for user %d: %v", user.ID, err)
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
@@ -45,6 +83,7 @@ func Login(w http.ResponseWriter, r *http.Request) {
 
 	tokenString, err := token.SignedString(jwtSecret)
 	if err != nil {
+		log.Printf("Error creating token for user %d: %v", user.ID, err)
 		http.Error(w, "Token creation error", http.StatusInternalServerError)
 		return
 	}
