@@ -21,7 +21,8 @@ func GetProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := userService.GetUserById(userID)
+	ctx := r.Context()
+	user, err := userService.GetUserById(ctx, userID)
 	if err != nil {
 		log.Printf("Error fetching user profile: %v", err)
 		if err.Error() == "user not found" {
