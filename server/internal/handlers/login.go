@@ -30,17 +30,29 @@ func Login(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if err.Error() == "user not found" {
 			log.Printf("User with email %s not found", loginData.Email)
-			http.Error(w, "User not found", http.StatusUnauthorized)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]string{
+				"message": "User not found",
+			})
 			return
 		}
 		log.Printf("Error fetching user by email: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "Internal server error",
+		})
 		return
 	}
 
 	if user.LockedUntil != nil && time.Now().Before(*user.LockedUntil) {
 		log.Printf("Account is locked until %v for user %d", user.LockedUntil, user.ID)
-		http.Error(w, "Account is temporarily locked due to multiple failed login attempts", http.StatusUnauthorized)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "Account is temporarily locked due to multiple failed login attempts",
+		})
 		return
 	}
 
@@ -50,7 +62,11 @@ func Login(w http.ResponseWriter, r *http.Request) {
 		updatedUser, err := userService.IncrementFailedLoginAttempts(ctx, user.ID)
 		if err != nil {
 			log.Printf("Error incrementing failed login attempts for user %d: %v", user.ID, err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{
+				"message": "Internal server error",
+			})
 			return
 		}
 
@@ -58,16 +74,28 @@ func Login(w http.ResponseWriter, r *http.Request) {
 			err = userService.LockAccount(ctx, updatedUser.ID, 5*time.Minute)
 			if err != nil {
 				log.Printf("Error locking account for user %d: %v", updatedUser.ID, err)
-				http.Error(w, "Internal server error", http.StatusInternalServerError)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(map[string]string{
+					"message": "Internal server error",
+				})
 				return
 			}
 
 			log.Printf("Account locked for user %d for 5 minutes", updatedUser.ID)
-			http.Error(w, "Account is temporarily locked due to multiple failed login attempts", http.StatusUnauthorized)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]string{
+				"message": "Account is temporarily locked due to multiple failed login attempts",
+			})
 			return
 		}
 
-		http.Error(w, "Invalid email or password", http.StatusUnauthorized)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "Invalid email or password",
+		})
 		return
 	}
 
@@ -84,7 +112,11 @@ func Login(w http.ResponseWriter, r *http.Request) {
 	tokenString, err := token.SignedString(jwtSecret)
 	if err != nil {
 		log.Printf("Error creating token for user %d: %v", user.ID, err)
-		http.Error(w, "Token creation error", http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "Token creation error",
+		})
 		return
 	}
 

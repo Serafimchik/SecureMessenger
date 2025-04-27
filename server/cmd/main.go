@@ -21,6 +21,8 @@ func main() {
 
 	r := chi.NewRouter()
 
+	r.Use(appMiddleware.CorsMiddleware)
+
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
