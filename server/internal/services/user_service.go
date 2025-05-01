@@ -27,6 +27,7 @@ type UserService interface {
 	LockAccount(ctx context.Context, userID int, duration time.Duration) error
 	ResetFailedLoginAttempts(ctx context.Context, userID int) error
 	UnlockAccount(ctx context.Context, userID int) error
+	SearchUsers(ctx context.Context, searchTerm string) ([]models.User, error)
 }
 
 type userService struct{}
@@ -404,4 +405,49 @@ func (us *userService) UnlockAccount(ctx context.Context, userID int) error {
 
 	log.Printf("Account unlocked for user %d", userID)
 	return nil
+}
+
+func (us *userService) SearchUsers(ctx context.Context, searchTerm string) ([]models.User, error) {
+	query := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar).
+		Select("id", "username", "email").
+		From("users").
+		Where(squirrel.Or{
+			squirrel.Like{"username": "%" + searchTerm + "%"},
+			squirrel.Like{"email": "%" + searchTerm + "%"},
+		}).
+		OrderBy("id DESC")
+
+	sqlStr, args, err := query.ToSql()
+	if err != nil {
+		log.Printf("Failed to build SQL query: %v", err)
+		return nil, err
+	}
+
+	log.Printf("Executing SQL: %s, Args: %v", sqlStr, args)
+
+	rows, err := db.Pool.Query(ctx, sqlStr, args...)
+	if err != nil {
+		log.Printf("Error searching users: %v", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []models.User
+	for rows.Next() {
+		var user models.User
+		err := rows.Scan(&user.ID, &user.Username, &user.Email)
+		if err != nil {
+			log.Printf("Error scanning user row: %v", err)
+			continue
+		}
+		users = append(users, user)
+	}
+
+	if len(users) == 0 {
+		log.Println("No users found for search term:", searchTerm)
+		return nil, errors.New("no users found")
+	}
+
+	log.Printf("Users found for search term '%s': %+v", searchTerm, users)
+	return users, nil
 }

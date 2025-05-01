@@ -18,3 +18,9 @@ type ChatParticipant struct {
 	UserID   int       `json:"user_id" db:"user_id"`
 	JoinedAt time.Time `json:"joined_at" db:"joined_at"`
 }
+
+type ChatWithLastMessage struct {
+	Chat
+	LastMessageContent *string    `db:"last_message_content"`
+	LastMessageSentAt  *time.Time `db:"last_message_sent_at"`
+}

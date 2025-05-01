@@ -33,7 +33,14 @@ func main() {
 	r.Group(func(r chi.Router) {
 		r.Use(appMiddleware.AuthMiddleware)
 		r.Get("/api/profile", handlers.GetProfile)
+
+		r.Post("/api/chats/create", handlers.CreateChat)
+		r.Get("/api/chats", handlers.GetChatsByUserId)
+		r.Get("/api/chats/{chat_id}", handlers.GetChatById)
+		r.Post("/api/chats/{chat_id}/participants", handlers.AddParticipants)
 	})
+
+	r.Get("/ws", handlers.WebSocketHandler)
 
 	port := ":8080"
 	srv := &http.Server{
