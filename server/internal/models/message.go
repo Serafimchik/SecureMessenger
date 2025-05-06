@@ -12,7 +12,7 @@ type Message struct {
 	Content   string     `json:"content" db:"content"`
 	Encrypted bool       `json:"encrypted" db:"encrypted"`
 	SentAt    time.Time  `json:"sent_at" db:"sent_at"`
-	ReadAt    *time.Time `json:"read_at,omitempty" db:"read_at"`
+	ReadAt    *time.Time `json:"read_at" db:"read_at"`
 }
 
 type File struct {

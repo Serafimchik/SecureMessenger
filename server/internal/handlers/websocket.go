@@ -79,23 +79,24 @@ func WebSocketHandler(w http.ResponseWriter, r *http.Request) {
 
 		switch msg.Event {
 		case "send_message":
-			sentAt, err := chatService.SaveMessage(r.Context(), msg.ChatID, userID, username, msg.Content)
+			messageID, sentAt, err := chatService.SaveMessage(r.Context(), msg.ChatID, userID, username, msg.Content)
 			if err != nil {
 				log.Printf("Error saving message: %v", err)
 				continue
 			}
 
 			eventData := map[string]interface{}{
-				"sender_id": strconv.Itoa(userID),
-				"username":  username,
-				"content":   msg.Content,
-				"chat_id":   msg.ChatID,
-				"sent_at":   sentAt.Format(time.RFC3339),
+				"message_id": strconv.Itoa(messageID),
+				"sender_id":  strconv.Itoa(userID),
+				"username":   username,
+				"content":    msg.Content,
+				"chat_id":    msg.ChatID,
+				"sent_at":    sentAt.Format(time.RFC3339),
 			}
 
 			clientPool.BroadcastEvent(msg.ChatID, "new_message", eventData)
 
-			log.Printf("Message sent to chat %d by user %d (%s) at %s", msg.ChatID, userID, username, sentAt)
+			log.Printf("Message sent to chat %d by user %d (%s) at %s, Message ID: %d", msg.ChatID, userID, username, sentAt, messageID)
 
 		case "create_chat":
 			var createChatReq struct {
@@ -126,6 +127,78 @@ func WebSocketHandler(w http.ResponseWriter, r *http.Request) {
 			})
 
 			log.Printf("Chat created with ID %d between user %d and recipient %d", chatID, userID, recipient.ID)
+
+		case "message_read":
+			var rawMsg struct {
+				Event string          `json:"event"`
+				Data  json.RawMessage `json:"data"`
+			}
+			var readMsgReq struct {
+				ChatID            int `json:"chat_id"`
+				LastReadMessageID int `json:"last_read_message_id"`
+			}
+
+			err := json.Unmarshal([]byte(msg.Content), &rawMsg)
+			if err != nil {
+				log.Printf("Invalid message format from user %d: %v", userID, err)
+				continue
+			}
+
+			err = json.Unmarshal(rawMsg.Data, &readMsgReq)
+			if err != nil || readMsgReq.ChatID == 0 || readMsgReq.LastReadMessageID == 0 {
+				log.Printf("Invalid read_messages request from user %d: %v", userID, err)
+				continue
+			}
+
+			log.Printf("User %d marked messages as read in chat %d up to message ID %d",
+				userID, readMsgReq.ChatID, readMsgReq.LastReadMessageID)
+
+			messageIDs, senderIDs, err := chatService.MarkMessagesAsRead(
+				r.Context(), readMsgReq.ChatID, userID, readMsgReq.LastReadMessageID)
+			if err != nil {
+				log.Printf("Error marking messages as read in chat %d for user %d: %v", readMsgReq.ChatID, userID, err)
+				continue
+			}
+
+			if len(messageIDs) == 0 {
+				log.Printf("No unread messages found in chat %d for user %d", readMsgReq.ChatID, userID)
+				continue
+			}
+
+			readAt := time.Now().UTC().Format(time.RFC3339)
+			eventData := map[string]interface{}{
+				"chat_id":              readMsgReq.ChatID,
+				"message_ids":          messageIDs,
+				"last_read_message_id": readMsgReq.LastReadMessageID,
+				"read_at":              readAt,
+			}
+
+			for _, senderID := range senderIDs {
+				if senderID == userID {
+					continue
+				}
+
+				client := clientPool.GetClient(senderID)
+				if client == nil {
+					log.Printf("Client %d not found in pool", senderID)
+					continue
+				}
+
+				err := client.Conn.WriteJSON(map[string]interface{}{
+					"event": "message_read",
+					"data":  eventData,
+				})
+				if err != nil {
+					log.Printf("Error sending message_read event to user %d: %v", senderID, err)
+					client.Conn.Close()
+					clientPool.RemoveClient(senderID)
+				} else {
+					log.Printf("Sent message_read event to user %d", senderID)
+				}
+			}
+
+			log.Printf("User %d marked messages [%v] as read in chat %d", userID, messageIDs, readMsgReq.ChatID)
+
 		}
 	}
 }

@@ -23,4 +23,5 @@ type ChatWithLastMessage struct {
 	Chat
 	LastMessageContent *string    `db:"last_message_content"`
 	LastMessageSentAt  *time.Time `db:"last_message_sent_at"`
+	UnreadCount        int        `json:"unread_count"`
 }

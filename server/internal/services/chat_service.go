@@ -10,6 +10,7 @@ import (
 	"SecureMessenger/server/internal/models"
 
 	"github.com/Masterminds/squirrel"
+	"github.com/jackc/pgtype"
 	"github.com/jackc/pgx"
 )
 
@@ -21,9 +22,11 @@ type ChatService interface {
 	IsUserInChat(ctx context.Context, chatID, userID int) (bool, error)
 	IsChatCreator(ctx context.Context, chatID, userID int) (bool, error)
 	GetParticipantsByChatId(ctx context.Context, chatID int) ([]models.User, error)
-	SaveMessage(ctx context.Context, chatID, senderID int, username, content string) (time.Time, error)
+	SaveMessage(ctx context.Context, chatID, senderID int, username, content string) (int, time.Time, error)
 	GetMessagesByChatId(ctx context.Context, chatID, offset, limit int) ([]models.Message, error)
 	IsUserParticipant(ctx context.Context, chatID, userID int) (bool, error)
+	MarkMessagesAsRead(ctx context.Context, chatID, recipientID, lastReadMessageID int) ([]int, []int, error)
+	GetUnreadMessagesCount(ctx context.Context, chatID, userID int) (int, error)
 }
 
 type chatService struct {
@@ -166,6 +169,13 @@ func (cs *chatService) GetChatsByUserId(ctx context.Context, userID int) ([]mode
 				chats[i].Name = recipient.Username
 			}
 		}
+
+		unreadCount, err := cs.GetUnreadMessagesCount(ctx, chat.ID, userID)
+		if err != nil {
+			log.Printf("Error getting unread messages count for chat %d: %v", chat.ID, err)
+			continue
+		}
+		chats[i].UnreadCount = unreadCount
 	}
 
 	log.Printf("Chats retrieved for user %d: %+v", userID, chats)
@@ -309,35 +319,36 @@ func (cs *chatService) GetParticipantsByChatId(ctx context.Context, chatID int) 
 	return participants, nil
 }
 
-func (cs *chatService) SaveMessage(ctx context.Context, chatID, senderID int, username, content string) (time.Time, error) {
+func (cs *chatService) SaveMessage(ctx context.Context, chatID, senderID int, username, content string) (int, time.Time, error) {
 	query := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar).
 		Insert("messages").
 		Columns("chat_id", "sender_id", "username", "content", "encrypted", "sent_at").
 		Values(chatID, senderID, username, content, true, squirrel.Expr("NOW()")).
-		Suffix("RETURNING sent_at")
+		Suffix("RETURNING id, sent_at")
 
 	sqlStr, args, err := query.ToSql()
 	if err != nil {
 		log.Printf("Failed to build SQL query: %v", err)
-		return time.Time{}, err
+		return 0, time.Time{}, err
 	}
 
 	log.Printf("Executing SQL: %s, Args: %v", sqlStr, args)
 
+	var messageID int
 	var sentAt time.Time
-	err = db.Pool.QueryRow(ctx, sqlStr, args...).Scan(&sentAt)
+	err = db.Pool.QueryRow(ctx, sqlStr, args...).Scan(&messageID, &sentAt)
 	if err != nil {
 		log.Printf("Error saving message: %v", err)
-		return time.Time{}, err
+		return 0, time.Time{}, err
 	}
 
-	log.Printf("Message saved: Chat ID %d, Sender ID %d (%s), Sent At: %v", chatID, senderID, username, sentAt)
-	return sentAt, nil
+	log.Printf("Message saved: Chat ID %d, Sender ID %d (%s), Message ID: %d, Sent At: %v", chatID, senderID, username, messageID, sentAt)
+	return messageID, sentAt, nil
 }
 
 func (cs *chatService) GetMessagesByChatId(ctx context.Context, chatID, offset, limit int) ([]models.Message, error) {
 	queryBuilder := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar).
-		Select("id", "chat_id", "sender_id", "username", "content", "sent_at").
+		Select("id", "chat_id", "sender_id", "username", "content", "sent_at", "read_at").
 		From("messages").
 		Where(squirrel.Eq{"chat_id": chatID}).
 		OrderBy("sent_at DESC").
@@ -350,6 +361,8 @@ func (cs *chatService) GetMessagesByChatId(ctx context.Context, chatID, offset, 
 		return nil, errors.New("failed to build query")
 	}
 
+	log.Printf("Executing SQL: %s, Args: %v", sqlQuery, args)
+
 	rows, err := db.Pool.Query(ctx, sqlQuery, args...)
 	if err != nil {
 		log.Printf("Error executing query for chat %d: %v", chatID, err)
@@ -358,13 +371,23 @@ func (cs *chatService) GetMessagesByChatId(ctx context.Context, chatID, offset, 
 	defer rows.Close()
 
 	var messages []models.Message
+
 	for rows.Next() {
 		var msg models.Message
-		err := rows.Scan(&msg.ID, &msg.ChatID, &msg.SenderID, &msg.Username, &msg.Content, &msg.SentAt)
+		var readAt pgtype.Timestamptz
+
+		err := rows.Scan(&msg.ID, &msg.ChatID, &msg.SenderID, &msg.Username, &msg.Content, &msg.SentAt, &readAt)
 		if err != nil {
 			log.Printf("Error scanning row: %v", err)
 			return nil, err
 		}
+
+		if readAt.Status == pgtype.Present {
+			msg.ReadAt = &readAt.Time
+		} else {
+			msg.ReadAt = nil
+		}
+
 		messages = append(messages, msg)
 	}
 
@@ -373,6 +396,7 @@ func (cs *chatService) GetMessagesByChatId(ctx context.Context, chatID, offset, 
 		return nil, rows.Err()
 	}
 
+	log.Printf("Fetched %d messages for chat %d", len(messages), chatID)
 	return messages, nil
 }
 
@@ -393,4 +417,110 @@ func (cs *chatService) IsUserParticipant(ctx context.Context, chatID, userID int
 	}
 
 	return exists, nil
+}
+
+func (cs *chatService) MarkMessagesAsRead(ctx context.Context, chatID, recipientID, lastReadMessageID int) ([]int, []int, error) {
+	query := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar).
+		Select("id", "sender_id").
+		From("messages").
+		Where(squirrel.And{
+			squirrel.Eq{"chat_id": chatID},
+			squirrel.LtOrEq{"id": lastReadMessageID},
+			squirrel.Eq{"read_at": nil},
+			squirrel.NotEq{"sender_id": recipientID},
+		})
+
+	sqlStr, args, err := query.ToSql()
+	if err != nil {
+		log.Printf("Failed to build SQL query: %v", err)
+		return nil, nil, err
+	}
+
+	log.Printf("Executing SQL: %s, Args: %v", sqlStr, args)
+
+	rows, err := db.Pool.Query(ctx, sqlStr, args...)
+	if err != nil {
+		log.Printf("Error fetching unread messages for chat %d and recipient %d: %v", chatID, recipientID, err)
+		return nil, nil, err
+	}
+	defer rows.Close()
+
+	var messageIDs []int
+	var senderIDsMap = make(map[int]struct{})
+	for rows.Next() {
+		var id, senderID int
+		err := rows.Scan(&id, &senderID)
+		if err != nil {
+			log.Printf("Error scanning message ID or sender ID: %v", err)
+			continue
+		}
+		messageIDs = append(messageIDs, id)
+		senderIDsMap[senderID] = struct{}{}
+	}
+
+	if len(messageIDs) == 0 {
+		log.Printf("No unread messages found for chat %d and recipient %d", chatID, recipientID)
+		return nil, nil, nil
+	}
+
+	var senderIDs []int
+	for senderID := range senderIDsMap {
+		senderIDs = append(senderIDs, senderID)
+	}
+
+	updateQuery := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar).
+		Update("messages").
+		Set("read_at", squirrel.Expr("NOW()")).
+		Where(squirrel.And{
+			squirrel.Eq{"chat_id": chatID},
+			squirrel.LtOrEq{"id": lastReadMessageID},
+			squirrel.Eq{"read_at": nil},
+			squirrel.NotEq{"sender_id": recipientID},
+		})
+
+	updateSQL, updateArgs, err := updateQuery.ToSql()
+	if err != nil {
+		log.Printf("Failed to build SQL query: %v", err)
+		return nil, nil, err
+	}
+
+	log.Printf("Executing SQL: %s, Args: %v", updateSQL, updateArgs)
+
+	_, err = db.Pool.Exec(ctx, updateSQL, updateArgs...)
+	if err != nil {
+		log.Printf("Error marking messages as read for chat %d and recipient %d: %v", chatID, recipientID, err)
+		return nil, nil, err
+	}
+
+	log.Printf("Marked messages [%v] as read in chat %d for user %d", messageIDs, chatID, recipientID)
+	return messageIDs, senderIDs, nil
+}
+
+func (cs *chatService) GetUnreadMessagesCount(ctx context.Context, chatID, userID int) (int, error) {
+	query := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar).
+		Select("COUNT(*)").
+		From("messages").
+		Where(squirrel.And{
+			squirrel.Eq{"chat_id": chatID},
+			squirrel.NotEq{"sender_id": userID},
+			squirrel.Eq{"read_at": nil},
+		})
+
+	sqlStr, args, err := query.ToSql()
+	if err != nil {
+		log.Printf("Failed to build SQL query: %v", err)
+		return 0, err
+	}
+
+	log.Printf("Executing SQL: %s, Args: %v", sqlStr, args)
+
+	var count int
+	err = db.Pool.QueryRow(ctx, sqlStr, args...).Scan(&count)
+	if err != nil {
+		log.Printf("Error getting unread messages count for chat %d and user %d: %v", chatID, userID, err)
+		return 0, err
+	}
+
+	log.Printf("Unread messages count for chat %d and user %d: %d", chatID, userID, count)
+	return count, nil
 }
