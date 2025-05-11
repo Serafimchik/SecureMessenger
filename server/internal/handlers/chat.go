@@ -73,7 +73,6 @@ func CreateChat(w http.ResponseWriter, r *http.Request) {
 
 func GetChatsByUserId(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-
 	currentUserIDRaw := ctx.Value("user_id")
 	if currentUserIDRaw == nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -97,14 +96,22 @@ func GetChatsByUserId(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	for i, chat := range chats {
+		participants, err := chatService.GetParticipants(ctx, chat.ID)
+		if err != nil {
+			log.Printf("Error getting participants for chat %d: %v", chat.ID, err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		chats[i].Participants = participants
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(chats)
 }
 
 func GetChatById(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-
-	log.Println("Handling request for GetChatById")
 
 	path := r.URL.Path
 	parts := strings.Split(strings.TrimPrefix(path, "/api/chats/"), "/")
@@ -120,7 +127,7 @@ func GetChatById(w http.ResponseWriter, r *http.Request) {
 	chatID, err := strconv.Atoi(chatIDStr)
 	if err != nil || chatID <= 0 {
 		log.Printf("Invalid chat ID: %s", chatIDStr)
-		http.Error(w, "Invalid chat ID", http.StatusBadRequest)
+		http.Error(w, "Invalid user ID", http.StatusBadRequest)
 		return
 	}
 
@@ -146,7 +153,6 @@ func GetChatById(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "User is not a participant of this chat", http.StatusForbidden)
 		return
 	}
-
 	pageStr := r.URL.Query().Get("page")
 	limitStr := r.URL.Query().Get("limit")
 
@@ -169,10 +175,25 @@ func GetChatById(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	participants, err := chatService.GetParticipants(ctx, chatID)
+	if err != nil {
+		log.Printf("Error getting participants for chat %d: %v", chatID, err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	filteredParticipants := make([]models.User, 0)
+	for _, participant := range participants {
+		if participant.ID != currentUserID {
+			filteredParticipants = append(filteredParticipants, participant)
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"chat_id":  chatID,
-		"messages": messages,
+		"chat_id":      chatID,
+		"messages":     messages,
+		"participants": filteredParticipants,
 	})
 }
 

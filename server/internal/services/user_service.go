@@ -13,6 +13,7 @@ import (
 	"SecureMessenger/server/internal/models"
 
 	"github.com/Masterminds/squirrel"
+	"github.com/jackc/pgx"
 )
 
 type UserService interface {
@@ -28,6 +29,7 @@ type UserService interface {
 	ResetFailedLoginAttempts(ctx context.Context, userID int) error
 	UnlockAccount(ctx context.Context, userID int) error
 	SearchUsers(ctx context.Context, searchTerm string) ([]models.User, error)
+	GetUserPublicKey(ctx context.Context, userID int) (string, error)
 }
 
 type userService struct{}
@@ -450,4 +452,33 @@ func (us *userService) SearchUsers(ctx context.Context, searchTerm string) ([]mo
 
 	log.Printf("Users found for search term '%s': %+v", searchTerm, users)
 	return users, nil
+}
+
+func (us *userService) GetUserPublicKey(ctx context.Context, userID int) (string, error) {
+	query := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar).
+		Select("public_key").
+		From("users").
+		Where(squirrel.Eq{"id": userID})
+
+	sqlStr, args, err := query.ToSql()
+	if err != nil {
+		log.Printf("Failed to build SQL query: %v", err)
+		return "", err
+	}
+
+	log.Printf("Executing SQL: %s, Args: %v", sqlStr, args)
+
+	var publicKey string
+	err = db.Pool.QueryRow(ctx, sqlStr, args...).Scan(&publicKey)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			log.Printf("Public key not found for user %d", userID)
+			return "", models.ErrUserNotFound
+		}
+		log.Printf("Error fetching public key for user %d: %v", userID, err)
+		return "", err
+	}
+
+	log.Printf("Fetched public key for user %d", userID)
+	return publicKey, nil
 }

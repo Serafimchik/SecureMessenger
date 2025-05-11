@@ -27,6 +27,7 @@ type ChatService interface {
 	IsUserParticipant(ctx context.Context, chatID, userID int) (bool, error)
 	MarkMessagesAsRead(ctx context.Context, chatID, recipientID, lastReadMessageID int) ([]int, []int, error)
 	GetUnreadMessagesCount(ctx context.Context, chatID, userID int) (int, error)
+	GetParticipants(ctx context.Context, chatID int) ([]models.User, error)
 }
 
 type chatService struct {
@@ -523,4 +524,46 @@ func (cs *chatService) GetUnreadMessagesCount(ctx context.Context, chatID, userI
 
 	log.Printf("Unread messages count for chat %d and user %d: %d", chatID, userID, count)
 	return count, nil
+}
+
+func (cs *chatService) GetParticipants(ctx context.Context, chatID int) ([]models.User, error) {
+	query := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar).
+		Select("u.id", "u.username", "u.public_key").
+		From("users u").
+		Join("chat_participants cp ON u.id = cp.user_id").
+		Where(squirrel.Eq{"cp.chat_id": chatID})
+
+	sqlStr, args, err := query.ToSql()
+	if err != nil {
+		log.Printf("Failed to build SQL query: %v", err)
+		return nil, err
+	}
+
+	log.Printf("Executing SQL: %s, Args: %v", sqlStr, args)
+
+	rows, err := db.Pool.Query(ctx, sqlStr, args...)
+	if err != nil {
+		log.Printf("Error fetching participants for chat %d: %v", chatID, err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	var participants []models.User
+	for rows.Next() {
+		var user models.User
+		err := rows.Scan(&user.ID, &user.Username, &user.PublicKey)
+		if err != nil {
+			log.Printf("Error scanning participant: %v", err)
+			continue
+		}
+		participants = append(participants, user)
+	}
+
+	if err := rows.Err(); err != nil {
+		log.Printf("Error iterating over participants: %v", err)
+		return nil, err
+	}
+
+	log.Printf("Fetched %d participants for chat %d", len(participants), chatID)
+	return participants, nil
 }

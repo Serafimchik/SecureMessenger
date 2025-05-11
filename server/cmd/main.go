@@ -38,6 +38,7 @@ func main() {
 		r.Get("/api/chats", handlers.GetChatsByUserId)
 		r.Get("/api/chats/{chat_id}", handlers.GetChatById)
 		r.Post("/api/chats/{chat_id}/participants", handlers.AddParticipants)
+		r.Get("/api/users/{id}/public-key", handlers.GetPublicKey)
 	})
 
 	r.Get("/ws", handlers.WebSocketHandler)

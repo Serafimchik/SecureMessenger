@@ -5,11 +5,12 @@ import (
 )
 
 type Chat struct {
-	ID        int       `json:"id" db:"id"`
-	Type      string    `json:"type" db:"type"`
-	Name      string    `json:"name,omitempty" db:"name"`
-	CreatedBy int       `json:"created_by" db:"created_by"`
-	CreatedAt time.Time `json:"created_at" db:"created_at"`
+	ID           int       `json:"id" db:"id"`
+	Type         string    `json:"type" db:"type"`
+	Name         string    `json:"name,omitempty" db:"name"`
+	CreatedBy    int       `json:"created_by" db:"created_by"`
+	CreatedAt    time.Time `json:"created_at" db:"created_at"`
+	Participants []User    `json:"participants"`
 }
 
 type ChatParticipant struct {
