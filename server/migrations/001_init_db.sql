@@ -30,7 +30,8 @@ CREATE TABLE chat_participants (
 CREATE TABLE messages (
     id SERIAL PRIMARY KEY,
     chat_id INT REFERENCES chats(id),
-    sender_id INT REFERENCES users(id),   
+    sender_id INT REFERENCES users(id),
+    username VARCHAR(50) NOT NULL,   
     content TEXT NOT NULL,
     encrypted BOOLEAN NOT NULL,  
     sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -67,11 +68,11 @@ CREATE TABLE refresh_tokens (
 
 -- +goose Down
 -- +goose StatementBegin
-DROP TABLE IF EXISTS users;
-DROP TABLE IF EXISTS chat_participants;
-DROP TABLE IF EXISTS chats;
-DROP TABLE IF EXISTS messages;
-DROP TABLE IF EXISTS files;
-DROP TABLE IF EXISTS notifications;
-DROP TABLE IF EXISTS refresh_tokens;
+DROP TABLE IF EXISTS users CASCADE;
+DROP TABLE IF EXISTS chat_participants CASCADE;
+DROP TABLE IF EXISTS chats CASCADE;
+DROP TABLE IF EXISTS messages CASCADE;
+DROP TABLE IF EXISTS files CASCADE;
+DROP TABLE IF EXISTS notifications CASCADE;
+DROP TABLE IF EXISTS refresh_tokens CASCADE;
 -- +goose StatementEnd

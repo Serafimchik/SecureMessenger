@@ -8,10 +8,11 @@ type Message struct {
 	ID        int        `json:"id" db:"id"`
 	ChatID    int        `json:"chat_id" db:"chat_id"`
 	SenderID  int        `json:"sender_id" db:"sender_id"`
+	Username  string     `json:"username"`
 	Content   string     `json:"content" db:"content"`
 	Encrypted bool       `json:"encrypted" db:"encrypted"`
 	SentAt    time.Time  `json:"sent_at" db:"sent_at"`
-	ReadAt    *time.Time `json:"read_at,omitempty" db:"read_at"`
+	ReadAt    *time.Time `json:"read_at" db:"read_at"`
 }
 
 type File struct {
