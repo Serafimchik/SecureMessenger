@@ -8,7 +8,7 @@ func CorsMiddleware(next http.Handler) http.Handler {
 
 		allowedOrigins := map[string]bool{
 			"http://localhost:3000": true,
-			"http://31.41.155.240":  true,
+			"31.41.155.240/:1":      true,
 		}
 
 		if allowedOrigins[origin] {
