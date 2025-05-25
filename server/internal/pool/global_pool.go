@@ -93,5 +93,7 @@ func (p *Pool) BroadcastEvent(chatID int, eventType string, data interface{}) {
 			client.Conn.Close()
 			p.RemoveClient(participant.ID)
 		}
+
+		log.Printf("sending event to user %d", participant.ID)
 	}
 }

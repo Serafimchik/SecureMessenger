@@ -28,6 +28,9 @@ type ChatService interface {
 	MarkMessagesAsRead(ctx context.Context, chatID, recipientID, lastReadMessageID int) ([]int, []int, error)
 	GetUnreadMessagesCount(ctx context.Context, chatID, userID int) (int, error)
 	GetParticipants(ctx context.Context, chatID int) ([]models.User, error)
+	CheckExistingPrivateChat(ctx context.Context, user1ID, user2ID int) (int, error)
+	RemoveParticipant(ctx context.Context, chatID, userID int) error
+	AddParticipant(ctx context.Context, chatID, userID int) error
 }
 
 type chatService struct {
@@ -43,8 +46,8 @@ func NewChatService(userService UserService) *chatService {
 func (cs *chatService) CreateChat(ctx context.Context, creatorID, recipientID int, chatType string, chatName *string) (int, error) {
 	query := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar).
 		Insert("chats").
-		Columns("type", "name", "created_by").
-		Values(chatType, chatName, creatorID).
+		Columns("type", "name", "created_by", "created_at").
+		Values(chatType, chatName, creatorID, time.Now()).
 		Suffix("RETURNING id")
 
 	sqlStr, args, err := query.ToSql()
@@ -64,10 +67,13 @@ func (cs *chatService) CreateChat(ctx context.Context, creatorID, recipientID in
 
 	log.Printf("Chat created with ID %d", chatID)
 
-	err = cs.AddParticipants(ctx, chatID, []int{creatorID, recipientID})
-	if err != nil {
-		log.Printf("Error adding participants to chat %d: %v", chatID, err)
-		return 0, err
+	// Если это личный чат, добавляем участников сразу
+	if chatType == "direct" {
+		err = cs.AddParticipants(ctx, chatID, []int{creatorID, recipientID})
+		if err != nil {
+			log.Printf("Error adding participants to chat %d: %v", chatID, err)
+			return 0, err
+		}
 	}
 
 	return chatID, nil
@@ -566,4 +572,84 @@ func (cs *chatService) GetParticipants(ctx context.Context, chatID int) ([]model
 
 	log.Printf("Fetched %d participants for chat %d", len(participants), chatID)
 	return participants, nil
+}
+
+func (cs *chatService) CheckExistingPrivateChat(ctx context.Context, user1ID, user2ID int) (int, error) {
+	query := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar).
+		Select("c.id").
+		From("chats c").
+		Join("chat_participants cp1 ON c.id = cp1.chat_id").
+		Join("chat_participants cp2 ON c.id = cp2.chat_id").
+		Where(squirrel.Eq{
+			"c.type":      "direct",
+			"cp1.user_id": user1ID,
+			"cp2.user_id": user2ID,
+		})
+
+	sqlStr, args, err := query.ToSql()
+	if err != nil {
+		log.Printf("Failed to build SQL query: %v", err)
+		return 0, err
+	}
+
+	log.Printf("Executing SQL: %s, Args: %v", sqlStr, args)
+
+	var chatID int
+	err = db.Pool.QueryRow(ctx, sqlStr, args...).Scan(&chatID)
+	if err != nil {
+		if err == pgx.ErrNoRows || err.Error() == "no rows in result set" {
+			log.Printf("No existing private chat found between users %d and %d", user1ID, user2ID)
+			return 0, nil
+		}
+		log.Printf("Error checking existing private chat: %v", err)
+		return 0, err
+	}
+
+	log.Printf("Found existing private chat with ID %d", chatID)
+	return chatID, nil
+}
+
+func (cs *chatService) RemoveParticipant(ctx context.Context, chatID, userID int) error {
+	query := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar).
+		Delete("chat_participants").
+		Where(squirrel.And{
+			squirrel.Eq{"chat_id": chatID},
+			squirrel.Eq{"user_id": userID},
+		})
+
+	sqlStr, args, err := query.ToSql()
+	if err != nil {
+		log.Printf("Failed to build SQL query: %v", err)
+		return err
+	}
+
+	log.Printf("Executing SQL: %s, Args: %v", sqlStr, args)
+	_, err = db.Pool.Exec(ctx, sqlStr, args...)
+	if err != nil {
+		log.Printf("Error removing participant %d from chat %d: %v", userID, chatID, err)
+		return err
+	}
+
+	log.Printf("Participant %d removed from chat %d", userID, chatID)
+	return nil
+}
+
+func (cs *chatService) AddParticipant(ctx context.Context, chatID, userID int) error {
+	query := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar).
+		Insert("chat_participants").
+		Columns("chat_id", "user_id").
+		Values(chatID, userID)
+	sqlStr, args, err := query.ToSql()
+	if err != nil {
+		log.Printf("Failed to build SQL query: %v", err)
+		return err
+	}
+	log.Printf("Executing SQL: %s, Args: %v", sqlStr, args)
+	_, err = db.Pool.Exec(ctx, sqlStr, args...)
+	if err != nil {
+		log.Printf("Error adding participant %d to chat %d: %v", userID, chatID, err)
+		return err
+	}
+	log.Printf("Participant %d added to chat %d", userID, chatID)
+	return nil
 }

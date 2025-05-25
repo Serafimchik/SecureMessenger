@@ -34,11 +34,10 @@ func main() {
 		r.Use(appMiddleware.AuthMiddleware)
 		r.Get("/api/profile", handlers.GetProfile)
 
-		r.Post("/api/chats/create", handlers.CreateChat)
 		r.Get("/api/chats", handlers.GetChatsByUserId)
 		r.Get("/api/chats/{chat_id}", handlers.GetChatById)
-		r.Post("/api/chats/{chat_id}/participants", handlers.AddParticipants)
-		r.Get("/api/users/{id}/public-key", handlers.GetPublicKey)
+		r.Post("/api/chats/{chat_id}/participants", handlers.AddParticipant)
+		r.Delete("/api/chats/{chat_id}/participants", handlers.RemoveParticipant)
 	})
 
 	r.Get("/ws", handlers.WebSocketHandler)

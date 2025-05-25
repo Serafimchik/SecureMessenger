@@ -20,6 +20,10 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+func broadcastToChat(chatID int, eventType string, eventData map[string]interface{}) {
+	pool.GlobalPool.BroadcastEvent(chatID, eventType, eventData)
+}
+
 func WebSocketHandler(w http.ResponseWriter, r *http.Request) {
 	tokenStr := r.URL.Query().Get("token")
 	if tokenStr == "" {
@@ -100,33 +104,88 @@ func WebSocketHandler(w http.ResponseWriter, r *http.Request) {
 
 		case "create_chat":
 			var createChatReq struct {
-				RecipientEmail string  `json:"recipient_email"`
-				Type           string  `json:"type"`
-				Name           *string `json:"name"`
+				RecipientEmail *string  `json:"recipient_email"`
+				Type           string   `json:"type"`
+				Name           *string  `json:"name"`
+				Emails         []string `json:"emails"`
 			}
 			err := json.Unmarshal([]byte(msg.Content), &createChatReq)
-			if err != nil || createChatReq.RecipientEmail == "" || createChatReq.Type == "" {
+			if err != nil || createChatReq.Type == "" {
 				log.Printf("Invalid create_chat request from user %d: %v", userID, err)
 				continue
 			}
 
-			recipient, err := userService.GetUserByEmail(r.Context(), createChatReq.RecipientEmail)
-			if err != nil {
-				log.Printf("Error getting user by email %s: %v", createChatReq.RecipientEmail, err)
-				continue
+			switch createChatReq.Type {
+			case "direct":
+				if createChatReq.RecipientEmail == nil || *createChatReq.RecipientEmail == "" {
+					log.Printf("Invalid create_chat request from user %d: recipient_email is required for direct chat", userID)
+					continue
+				}
+
+				recipient, err := userService.GetUserByEmail(r.Context(), *createChatReq.RecipientEmail)
+				if err != nil {
+					log.Printf("Error getting user by email %s: %v", *createChatReq.RecipientEmail, err)
+					continue
+				}
+
+				existingChatID, err := chatService.CheckExistingPrivateChat(r.Context(), userID, recipient.ID)
+				if err != nil {
+					log.Printf("Error checking existing private chat: %v", err)
+					continue
+				}
+
+				if existingChatID > 0 {
+					clientPool.BroadcastEvent(existingChatID, "new_chat", map[string]int{
+						"chat_id": existingChatID,
+					})
+					log.Printf("Existing private chat found with ID %d", existingChatID)
+					continue
+				}
+
+				chatID, err := chatService.CreateChat(r.Context(), userID, recipient.ID, "direct", nil)
+				if err != nil {
+					log.Printf("Error creating direct chat between user %d and recipient %d: %v", userID, recipient.ID, err)
+					continue
+				}
+
+				clientPool.BroadcastEvent(chatID, "new_chat", map[string]int{
+					"chat_id": chatID,
+				})
+				log.Printf("Direct chat created with ID %d between user %d and recipient %d", chatID, userID, recipient.ID)
+
+			case "group":
+				if createChatReq.Name == nil || *createChatReq.Name == "" || len(createChatReq.Emails) == 0 {
+					log.Printf("Invalid create_chat request from user %d: name and emails are required for group chat", userID)
+					continue
+				}
+
+				userIDs, err := userService.GetUserIDsByEmails(r.Context(), createChatReq.Emails)
+				if err != nil {
+					log.Printf("Error getting user IDs by emails: %v", err)
+					continue
+				}
+
+				userIDs = append(userIDs, userID)
+
+				chatID, err := chatService.CreateChat(r.Context(), userID, 0, "group", createChatReq.Name)
+				if err != nil {
+					log.Printf("Error creating group chat: %v", err)
+					continue
+				}
+
+				if err := chatService.AddParticipants(r.Context(), chatID, userIDs); err != nil {
+					log.Printf("Error adding participants to chat %d: %v", chatID, err)
+					continue
+				}
+
+				clientPool.BroadcastEvent(chatID, "new_chat", map[string]int{
+					"chat_id": chatID,
+				})
+				log.Printf("Group chat created with ID %d and name %s", chatID, *createChatReq.Name)
+
+			default:
+				log.Printf("Invalid chat type: %s", createChatReq.Type)
 			}
-
-			chatID, err := chatService.CreateChat(r.Context(), userID, recipient.ID, createChatReq.Type, createChatReq.Name)
-			if err != nil {
-				log.Printf("Error creating chat between user %d and recipient %d: %v", userID, recipient.ID, err)
-				continue
-			}
-
-			clientPool.BroadcastEvent(chatID, "new_chat", map[string]int{
-				"chat_id": chatID,
-			})
-
-			log.Printf("Chat created with ID %d between user %d and recipient %d", chatID, userID, recipient.ID)
 
 		case "message_read":
 			var rawMsg struct {
@@ -198,7 +257,6 @@ func WebSocketHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 			log.Printf("User %d marked messages [%v] as read in chat %d", userID, messageIDs, readMsgReq.ChatID)
-
 		}
 	}
 }
