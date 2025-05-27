@@ -38,6 +38,7 @@ func main() {
 		r.Get("/api/chats/{chat_id}", handlers.GetChatById)
 		r.Post("/api/chats/{chat_id}/participants", handlers.AddParticipant)
 		r.Delete("/api/chats/{chat_id}/participants", handlers.RemoveParticipant)
+		r.Post("/api/users/public-keys", handlers.GetPublicKeys)
 	})
 
 	r.Get("/ws", handlers.WebSocketHandler)

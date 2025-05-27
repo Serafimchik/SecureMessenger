@@ -19,115 +19,6 @@ func init() {
 	chatService = services.NewChatService(userService)
 }
 
-func CreateChat(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
-	var req struct {
-		Type           string   `json:"type"`
-		Name           *string  `json:"name"`
-		RecipientEmail *string  `json:"recipient_email"`
-		Emails         []string `json:"emails"`
-	}
-
-	err := json.NewDecoder(r.Body).Decode(&req)
-	if err != nil || req.Type == "" {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
-		return
-	}
-
-	currentUserIDRaw := ctx.Value("user_id")
-	if currentUserIDRaw == nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-
-	currentUserID, ok := currentUserIDRaw.(int)
-	if !ok {
-		http.Error(w, "Invalid user ID in context", http.StatusInternalServerError)
-		return
-	}
-
-	switch req.Type {
-	case "direct":
-		if req.RecipientEmail == nil || *req.RecipientEmail == "" {
-			http.Error(w, "Recipient email is required for direct chat", http.StatusBadRequest)
-			return
-		}
-
-		recipient, err := userService.GetUserByEmail(ctx, *req.RecipientEmail)
-		if err != nil {
-			log.Printf("Error getting user by email %s: %v", *req.RecipientEmail, err)
-			if errors.Is(err, models.ErrUserNotFound) {
-				http.Error(w, "Recipient not found", http.StatusNotFound)
-				return
-			}
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-			return
-		}
-
-		existingChatID, err := chatService.CheckExistingPrivateChat(ctx, currentUserID, recipient.ID)
-		if err != nil {
-			log.Printf("Error checking existing private chat: %v", err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-			return
-		}
-
-		if existingChatID > 0 {
-			log.Printf("Existing private chat found with ID %d", existingChatID)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]int{"chat_id": existingChatID})
-			return
-		}
-
-		chatID, err := chatService.CreateChat(ctx, currentUserID, recipient.ID, "direct", nil)
-		if err != nil {
-			log.Printf("Error creating direct chat between user %d and recipient %d: %v", currentUserID, recipient.ID, err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]int{"chat_id": chatID})
-
-	case "group":
-		if req.Name == nil || *req.Name == "" || len(req.Emails) == 0 {
-			http.Error(w, "Name and emails are required for group chat", http.StatusBadRequest)
-			return
-		}
-
-		userIDs, err := userService.GetUserIDsByEmails(ctx, req.Emails)
-		if err != nil {
-			log.Printf("Error getting user IDs by emails: %v", err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-			return
-		}
-
-		userIDs = append(userIDs, currentUserID)
-
-		chatID, err := chatService.CreateChat(ctx, currentUserID, 0, "group", req.Name)
-		if err != nil {
-			log.Printf("Error creating group chat: %v", err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-			return
-		}
-
-		if err := chatService.AddParticipants(ctx, chatID, userIDs); err != nil {
-			log.Printf("Error adding participants to chat %d: %v", chatID, err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]int{"chat_id": chatID})
-
-	default:
-		http.Error(w, "Invalid chat type", http.StatusBadRequest)
-	}
-}
-
 func GetChatsByUserId(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	currentUserIDRaw := ctx.Value("user_id")
@@ -376,4 +267,73 @@ func RemoveParticipant(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{
 		"message": "Participant removed successfully",
 	})
+}
+
+func GetPublicKeys(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Emails []string `json:"emails"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("Error decoding request body: %v", err)
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if len(req.Emails) == 0 {
+		http.Error(w, "No emails provided", http.StatusBadRequest)
+		return
+	}
+
+	userID, ok := r.Context().Value("user_id").(int)
+	if !ok {
+		log.Printf("User ID not found in context")
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	requester, err := userService.GetUserById(r.Context(), userID)
+	if err != nil {
+		log.Printf("Error getting user by ID %d: %v", userID, err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	users, err := userService.GetUsersByEmails(r.Context(), req.Emails)
+	if err != nil {
+		log.Printf("Error getting users by emails: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	response := struct {
+		Keys []struct {
+			Email     string `json:"email"`
+			PublicKey string `json:"public_key"`
+		} `json:"keys"`
+	}{}
+
+	response.Keys = append(response.Keys, struct {
+		Email     string `json:"email"`
+		PublicKey string `json:"public_key"`
+	}{
+		Email:     requester.Email,
+		PublicKey: *requester.PublicKey,
+	})
+
+	for _, user := range users {
+		response.Keys = append(response.Keys, struct {
+			Email     string `json:"email"`
+			PublicKey string `json:"public_key"`
+		}{
+			Email:     user.Email,
+			PublicKey: *user.PublicKey,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("Error encoding response: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	}
 }

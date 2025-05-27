@@ -31,6 +31,7 @@ type UserService interface {
 	SearchUsers(ctx context.Context, searchTerm string) ([]models.User, error)
 	GetUserPublicKey(ctx context.Context, userID int) (string, error)
 	GetUserIDsByEmails(ctx context.Context, emails []string) ([]int, error)
+	GetUsersByEmails(ctx context.Context, emails []string) ([]*models.User, error)
 }
 
 type userService struct{}
@@ -531,4 +532,49 @@ func (us *userService) GetUserIDsByEmails(ctx context.Context, emails []string) 
 
 	log.Printf("Fetched user IDs: %v for emails: %v", userIDs, emails)
 	return userIDs, nil
+}
+
+func (us *userService) GetUsersByEmails(ctx context.Context, emails []string) ([]*models.User, error) {
+	if len(emails) == 0 {
+		return nil, errors.New("no emails provided")
+	}
+
+	query := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar).
+		Select("id", "username", "email", "public_key").
+		From("users").
+		Where(squirrel.Eq{"email": emails})
+
+	sqlStr, args, err := query.ToSql()
+	if err != nil {
+		log.Printf("Failed to build SQL query: %v", err)
+		return nil, err
+	}
+
+	log.Printf("Executing SQL: %s, Args: %v", sqlStr, args)
+
+	rows, err := db.Pool.Query(ctx, sqlStr, args...)
+	if err != nil {
+		log.Printf("Error fetching users by emails: %v", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []*models.User
+	for rows.Next() {
+		var user models.User
+		err := rows.Scan(&user.ID, &user.Username, &user.Email, &user.PublicKey)
+		if err != nil {
+			log.Printf("Error scanning user row: %v", err)
+			continue
+		}
+		users = append(users, &user)
+	}
+
+	if err := rows.Err(); err != nil {
+		log.Printf("Error iterating over rows: %v", err)
+		return nil, err
+	}
+
+	log.Printf("Fetched %d users for emails: %v", len(users), emails)
+	return users, nil
 }

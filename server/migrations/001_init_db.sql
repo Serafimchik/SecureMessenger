@@ -24,6 +24,7 @@ CREATE TABLE chat_participants (
     chat_id INT REFERENCES chats(id),
     user_id INT REFERENCES users(id),
     joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    encrypted_chat_key TEXT,
     UNIQUE(chat_id, user_id)
 );
 
