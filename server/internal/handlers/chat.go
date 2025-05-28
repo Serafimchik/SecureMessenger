@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"SecureMessenger/server/internal/models"
+	"SecureMessenger/server/internal/pool"
 	"SecureMessenger/server/internal/services"
 )
 
@@ -155,7 +156,8 @@ func AddParticipant(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Email string `json:"email"`
+		Email        string `json:"email"`
+		EncryptedKey string `json:"encrypted_key"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Printf("Error decoding request body: %v", err)
@@ -170,7 +172,11 @@ func AddParticipant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = chatService.AddParticipant(ctx, chatID, user.ID)
+	encryptedKeys := map[int]string{
+		user.ID: req.EncryptedKey,
+	}
+
+	err = chatService.AddParticipants(ctx, chatID, []int{user.ID}, encryptedKeys)
 	if err != nil {
 		log.Printf("Error adding participant to chat %d: %v", chatID, err)
 		http.Error(w, "Failed to add participant", http.StatusInternalServerError)
@@ -189,6 +195,14 @@ func AddParticipant(w http.ResponseWriter, r *http.Request) {
 			"participants": participants,
 		}
 		broadcastToChat(chatID, "participant_added", eventData)
+		if err != nil {
+			log.Printf("Error getting chat by ID %d for user %d: %v", chatID, user.ID, err)
+		} else {
+			pool.GlobalPool.BroadcastEvent(chatID, "new_chat", map[string]int{
+				"chat_id": chatID,
+			})
+			log.Printf("Sent 'new_chat' event to user %d for chat %d", user.ID, chatID)
+		}
 	}
 
 	w.WriteHeader(http.StatusOK)
