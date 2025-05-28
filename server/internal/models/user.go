@@ -22,3 +22,8 @@ type RefreshToken struct {
 	Expiry    int64     `json:"expiry" db:"expiry"`
 	CreatedAt time.Time `json:"created_at" db:"created_at"`
 }
+
+type EncryptedKey struct {
+	Email        string `json:"email"`
+	EncryptedKey string `json:"encrypted_key"`
+}

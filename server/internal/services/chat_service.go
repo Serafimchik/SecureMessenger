@@ -16,7 +16,7 @@ import (
 
 type ChatService interface {
 	CreateChat(ctx context.Context, creatorID, recipientID int, chatType string, chatName *string) (int, error)
-	AddParticipants(ctx context.Context, chatID int, userIDs []int) error
+	AddParticipants(ctx context.Context, chatID int, userIDs []int, encryptedKeys map[int]string) error
 	GetChatsByUserId(ctx context.Context, userID int) ([]models.ChatWithLastMessage, error)
 	GetChatById(ctx context.Context, chatID, userID int) (*models.Chat, error)
 	IsUserInChat(ctx context.Context, chatID, userID int) (bool, error)
@@ -49,58 +49,65 @@ func (cs *chatService) CreateChat(ctx context.Context, creatorID, recipientID in
 		Columns("type", "name", "created_by", "created_at").
 		Values(chatType, chatName, creatorID, time.Now()).
 		Suffix("RETURNING id")
-
 	sqlStr, args, err := query.ToSql()
 	if err != nil {
 		log.Printf("Failed to build SQL query: %v", err)
 		return 0, err
 	}
-
 	log.Printf("Executing SQL: %s, Args: %v", sqlStr, args)
-
 	var chatID int
 	err = db.Pool.QueryRow(ctx, sqlStr, args...).Scan(&chatID)
 	if err != nil {
 		log.Printf("Error creating chat: %v", err)
 		return 0, err
 	}
-
 	log.Printf("Chat created with ID %d", chatID)
 
-	// Если это личный чат, добавляем участников сразу
 	if chatType == "direct" {
-		err = cs.AddParticipants(ctx, chatID, []int{creatorID, recipientID})
+		encryptedKeys := make(map[int]string)
+		err = cs.AddParticipants(ctx, chatID, []int{creatorID, recipientID}, encryptedKeys)
 		if err != nil {
 			log.Printf("Error adding participants to chat %d: %v", chatID, err)
 			return 0, err
 		}
 	}
-
 	return chatID, nil
 }
 
-func (cs *chatService) AddParticipants(ctx context.Context, chatID int, userIDs []int) error {
+func (cs *chatService) AddParticipants(ctx context.Context, chatID int, userIDs []int, encryptedKeys map[int]string) error {
 	for _, userID := range userIDs {
+		encryptedKey := encryptedKeys[userID]
+		if encryptedKey == "" {
+			log.Printf("Encrypted key is missing for user %d in chat %d", userID, chatID)
+			continue
+		}
+
+		isParticipant, err := cs.IsUserInChat(ctx, chatID, userID)
+		if err != nil {
+			log.Printf("Error checking if user %d is in chat %d: %v", userID, chatID, err)
+			return err
+		}
+		if isParticipant {
+			log.Printf("User %d is already a participant of chat %d", userID, chatID)
+			continue
+		}
+
 		query := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar).
 			Insert("chat_participants").
-			Columns("chat_id", "user_id").
-			Values(chatID, userID)
-
+			Columns("chat_id", "user_id", "encrypted_chat_key").
+			Values(chatID, userID, encryptedKey)
 		sqlStr, args, err := query.ToSql()
 		if err != nil {
 			log.Printf("Failed to build SQL query: %v", err)
 			return err
 		}
-
 		log.Printf("Executing SQL: %s, Args: %v", sqlStr, args)
-
 		_, err = db.Pool.Exec(ctx, sqlStr, args...)
 		if err != nil {
 			log.Printf("Error adding participant %d to chat %d: %v", userID, chatID, err)
 			return err
 		}
 	}
-
 	log.Printf("Participants added to chat %d", chatID)
 	return nil
 }
@@ -111,12 +118,14 @@ func (cs *chatService) GetChatsByUserId(ctx context.Context, userID int) ([]mode
 			"COALESCE(chats.name, '') AS name",
 			"chats.created_by", "chats.created_at",
 			"COALESCE(messages.content, '') AS last_message_content",
-			"COALESCE(messages.sent_at, '1970-01-01T00:00:01Z'::timestamp) AS last_message_sent_at").
+			"COALESCE(messages.sent_at, '1970-01-01T00:00:01Z'::timestamp) AS last_message_sent_at",
+			"cp.encrypted_chat_key",
+		).
 		From("chats").
-		Join("chat_participants ON chats.id = chat_participants.chat_id").
+		Join("chat_participants cp ON chats.id = cp.chat_id AND cp.user_id = ?", userID).
 		LeftJoin("messages ON chats.id = messages.chat_id AND messages.sent_at = (" +
 			"SELECT MAX(sent_at) FROM messages WHERE messages.chat_id = chats.id)").
-		Where(squirrel.Eq{"chat_participants.user_id": userID}).
+		Where(squirrel.Eq{"cp.user_id": userID}).
 		OrderBy("messages.sent_at DESC NULLS LAST")
 
 	sqlStr, args, err := query.ToSql()
@@ -137,8 +146,10 @@ func (cs *chatService) GetChatsByUserId(ctx context.Context, userID int) ([]mode
 	var chats []models.ChatWithLastMessage
 	for rows.Next() {
 		var chat models.ChatWithLastMessage
-		err := rows.Scan(&chat.ID, &chat.Type, &chat.Name, &chat.CreatedBy, &chat.CreatedAt,
-			&chat.LastMessageContent, &chat.LastMessageSentAt)
+		err := rows.Scan(
+			&chat.ID, &chat.Type, &chat.Name, &chat.CreatedBy, &chat.CreatedAt,
+			&chat.LastMessageContent, &chat.LastMessageSentAt, &chat.EncryptedChatKey,
+		)
 		if err != nil {
 			log.Printf("Error scanning chat row: %v", err)
 			continue
@@ -183,6 +194,12 @@ func (cs *chatService) GetChatsByUserId(ctx context.Context, userID int) ([]mode
 			continue
 		}
 		chats[i].UnreadCount = unreadCount
+		participants, err := cs.GetParticipants(ctx, chat.ID)
+		if err != nil {
+			log.Printf("Error getting participants for chat %d: %v", chat.ID, err)
+			continue
+		}
+		chats[i].Participants = participants
 	}
 
 	log.Printf("Chats retrieved for user %d: %+v", userID, chats)

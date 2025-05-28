@@ -11,6 +11,7 @@ import (
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/gorilla/websocket"
 
+	"SecureMessenger/server/internal/models"
 	"SecureMessenger/server/internal/pool"
 )
 
@@ -104,10 +105,11 @@ func WebSocketHandler(w http.ResponseWriter, r *http.Request) {
 
 		case "create_chat":
 			var createChatReq struct {
-				RecipientEmail *string  `json:"recipient_email"`
-				Type           string   `json:"type"`
-				Name           *string  `json:"name"`
-				Emails         []string `json:"emails"`
+				RecipientEmail *string               `json:"recipient_email"`
+				Type           string                `json:"type"`
+				Name           *string               `json:"name"`
+				Emails         []string              `json:"emails"`
+				EncryptedKeys  []models.EncryptedKey `json:"encrypted_keys"`
 			}
 			err := json.Unmarshal([]byte(msg.Content), &createChatReq)
 			if err != nil || createChatReq.Type == "" {
@@ -148,14 +150,33 @@ func WebSocketHandler(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 
+				encryptedKeys := make(map[int]string)
+				for _, key := range createChatReq.EncryptedKeys {
+					user, err := userService.GetUserByEmail(r.Context(), key.Email)
+					if err != nil {
+						log.Printf("Error getting user by email %s: %v", key.Email, err)
+						continue
+					}
+					encryptedKeys[user.ID] = key.EncryptedKey
+				}
+
+				if _, exists := encryptedKeys[userID]; !exists {
+					log.Printf("Encrypted key is missing for creator user %d", userID)
+					continue
+				}
+
+				if err := chatService.AddParticipants(r.Context(), chatID, []int{userID, recipient.ID}, encryptedKeys); err != nil {
+					log.Printf("Error adding participants to chat %d: %v", chatID, err)
+					continue
+				}
+
 				clientPool.BroadcastEvent(chatID, "new_chat", map[string]int{
 					"chat_id": chatID,
 				})
 				log.Printf("Direct chat created with ID %d between user %d and recipient %d", chatID, userID, recipient.ID)
-
 			case "group":
-				if createChatReq.Name == nil || *createChatReq.Name == "" || len(createChatReq.Emails) == 0 {
-					log.Printf("Invalid create_chat request from user %d: name and emails are required for group chat", userID)
+				if createChatReq.Name == nil || *createChatReq.Name == "" || len(createChatReq.Emails) == 0 || len(createChatReq.EncryptedKeys) == 0 {
+					log.Printf("Invalid create_chat request from user %d: name, emails, and encrypted keys are required for group chat", userID)
 					continue
 				}
 
@@ -173,7 +194,17 @@ func WebSocketHandler(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 
-				if err := chatService.AddParticipants(r.Context(), chatID, userIDs); err != nil {
+				encryptedKeys := make(map[int]string)
+				for _, key := range createChatReq.EncryptedKeys {
+					user, err := userService.GetUserByEmail(r.Context(), key.Email)
+					if err != nil {
+						log.Printf("Error getting user by email %s: %v", key.Email, err)
+						continue
+					}
+					encryptedKeys[user.ID] = key.EncryptedKey
+				}
+
+				if err := chatService.AddParticipants(r.Context(), chatID, userIDs, encryptedKeys); err != nil {
 					log.Printf("Error adding participants to chat %d: %v", chatID, err)
 					continue
 				}
