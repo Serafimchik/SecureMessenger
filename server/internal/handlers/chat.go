@@ -44,16 +44,6 @@ func GetChatsByUserId(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for i, chat := range chats {
-		participants, err := chatService.GetParticipants(ctx, chat.ID)
-		if err != nil {
-			log.Printf("Error getting participants for chat %d: %v", chat.ID, err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-			return
-		}
-		chats[i].Participants = participants
-	}
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(chats)
 }

@@ -118,12 +118,14 @@ func (cs *chatService) GetChatsByUserId(ctx context.Context, userID int) ([]mode
 			"COALESCE(chats.name, '') AS name",
 			"chats.created_by", "chats.created_at",
 			"COALESCE(messages.content, '') AS last_message_content",
-			"COALESCE(messages.sent_at, '1970-01-01T00:00:01Z'::timestamp) AS last_message_sent_at").
+			"COALESCE(messages.sent_at, '1970-01-01T00:00:01Z'::timestamp) AS last_message_sent_at",
+			"cp.encrypted_chat_key",
+		).
 		From("chats").
-		Join("chat_participants ON chats.id = chat_participants.chat_id").
+		Join("chat_participants cp ON chats.id = cp.chat_id AND cp.user_id = ?", userID).
 		LeftJoin("messages ON chats.id = messages.chat_id AND messages.sent_at = (" +
 			"SELECT MAX(sent_at) FROM messages WHERE messages.chat_id = chats.id)").
-		Where(squirrel.Eq{"chat_participants.user_id": userID}).
+		Where(squirrel.Eq{"cp.user_id": userID}).
 		OrderBy("messages.sent_at DESC NULLS LAST")
 
 	sqlStr, args, err := query.ToSql()
@@ -144,8 +146,10 @@ func (cs *chatService) GetChatsByUserId(ctx context.Context, userID int) ([]mode
 	var chats []models.ChatWithLastMessage
 	for rows.Next() {
 		var chat models.ChatWithLastMessage
-		err := rows.Scan(&chat.ID, &chat.Type, &chat.Name, &chat.CreatedBy, &chat.CreatedAt,
-			&chat.LastMessageContent, &chat.LastMessageSentAt)
+		err := rows.Scan(
+			&chat.ID, &chat.Type, &chat.Name, &chat.CreatedBy, &chat.CreatedAt,
+			&chat.LastMessageContent, &chat.LastMessageSentAt, &chat.EncryptedChatKey,
+		)
 		if err != nil {
 			log.Printf("Error scanning chat row: %v", err)
 			continue
@@ -190,6 +194,12 @@ func (cs *chatService) GetChatsByUserId(ctx context.Context, userID int) ([]mode
 			continue
 		}
 		chats[i].UnreadCount = unreadCount
+		participants, err := cs.GetParticipants(ctx, chat.ID)
+		if err != nil {
+			log.Printf("Error getting participants for chat %d: %v", chat.ID, err)
+			continue
+		}
+		chats[i].Participants = participants
 	}
 
 	log.Printf("Chats retrieved for user %d: %+v", userID, chats)
