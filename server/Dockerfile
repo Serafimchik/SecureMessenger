@@ -1,4 +1,4 @@
-FROM golang:1.20.3-alpine AS builder
+FROM golang:1.23-alpine AS builder
 
 COPY . /github.com/Serafimchik/SecureMessenger/server/
 WORKDIR /github.com/Serafimchik/SecureMessenger/server/
