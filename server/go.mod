@@ -1,8 +1,6 @@
 module SecureMessenger/server
 
-go 1.23.0
-
-toolchain go1.23.3
+go 1.23
 
 require (
 	github.com/Masterminds/squirrel v1.5.4
