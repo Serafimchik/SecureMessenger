@@ -8,6 +8,7 @@ import (
 
 	"SecureMessenger/server/internal/db"
 	"SecureMessenger/server/internal/models"
+	"SecureMessenger/server/internal/utils"
 
 	"github.com/Masterminds/squirrel"
 	"github.com/jackc/pgtype"
@@ -15,7 +16,7 @@ import (
 )
 
 type ChatService interface {
-	CreateChat(ctx context.Context, creatorID, recipientID int, chatType string, chatName *string) (int, error)
+	CreateChat(ctx context.Context, creatorID, recipientID int, chatType string, chatName *string, rawAESKey *string) (int, error)
 	AddParticipants(ctx context.Context, chatID int, userIDs []int, encryptedKeys map[int]string) error
 	GetChatsByUserId(ctx context.Context, userID int) ([]models.ChatWithLastMessage, error)
 	GetChatById(ctx context.Context, chatID, userID int) (*models.Chat, error)
@@ -31,6 +32,9 @@ type ChatService interface {
 	CheckExistingPrivateChat(ctx context.Context, user1ID, user2ID int) (int, error)
 	RemoveParticipant(ctx context.Context, chatID, userID int) error
 	AddParticipant(ctx context.Context, chatID, userID int) error
+	SearchPublicChannels(ctx context.Context, query string) ([]models.Chat, error)
+	JoinChat(ctx context.Context, chatID, userID int) error
+	LeaveChannel(ctx context.Context, channelID, userID int) error
 }
 
 type chatService struct {
@@ -43,11 +47,11 @@ func NewChatService(userService UserService) *chatService {
 	}
 }
 
-func (cs *chatService) CreateChat(ctx context.Context, creatorID, recipientID int, chatType string, chatName *string) (int, error) {
+func (cs *chatService) CreateChat(ctx context.Context, creatorID, recipientID int, chatType string, chatName *string, rawAESKey *string) (int, error) {
 	query := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar).
 		Insert("chats").
-		Columns("type", "name", "created_by", "created_at").
-		Values(chatType, chatName, creatorID, time.Now()).
+		Columns("type", "name", "created_by", "created_at", "raw_aes_key").
+		Values(chatType, chatName, creatorID, time.Now(), rawAESKey).
 		Suffix("RETURNING id")
 	sqlStr, args, err := query.ToSql()
 	if err != nil {
@@ -668,5 +672,162 @@ func (cs *chatService) AddParticipant(ctx context.Context, chatID, userID int) e
 		return err
 	}
 	log.Printf("Participant %d added to chat %d", userID, chatID)
+	return nil
+}
+
+func (cs *chatService) SearchPublicChannels(ctx context.Context, query string) ([]models.Chat, error) {
+	if query == "" {
+		return nil, errors.New("search query is required")
+	}
+
+	sqlQuery := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar).
+		Select("id", "type", "name", "created_by", "created_at").
+		From("chats").
+		Where(squirrel.And{
+			squirrel.Eq{"type": "channel"},
+			squirrel.Like{"name": "%" + query + "%"},
+		}).
+		OrderBy("created_at DESC")
+
+	sqlStr, args, err := sqlQuery.ToSql()
+	if err != nil {
+		log.Printf("Failed to build SQL query: %v", err)
+		return nil, err
+	}
+	log.Printf("Executing SQL: %s, Args: %v", sqlStr, args)
+
+	rows, err := db.Pool.Query(ctx, sqlStr, args...)
+	if err != nil {
+		log.Printf("Error searching public channels: %v", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	var channels []models.Chat
+	for rows.Next() {
+		var chat models.Chat
+		err := rows.Scan(&chat.ID, &chat.Type, &chat.Name, &chat.CreatedBy, &chat.CreatedAt)
+		if err != nil {
+			log.Printf("Error scanning chat row: %v", err)
+			continue
+		}
+		channels = append(channels, chat)
+	}
+
+	if len(channels) == 0 {
+		log.Printf("No public channels found for query: %s", query)
+		return nil, models.ErrChatNotFound
+	}
+
+	log.Printf("Found %d public channels for query: %s", len(channels), query)
+	return channels, nil
+}
+
+func (cs *chatService) JoinChat(ctx context.Context, chatID, userID int) error {
+	isParticipant, err := cs.IsUserInChat(ctx, chatID, userID)
+	if err != nil {
+		log.Printf("Error checking if user %d is in chat %d: %v", userID, chatID, err)
+		return err
+	}
+	if isParticipant {
+		log.Printf("User %d is already a participant of chat %d", userID, chatID)
+		return errors.New("user already a participant")
+	}
+
+	var rawAESKey string
+	query := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar).
+		Select("raw_aes_key").
+		From("chats").
+		Where(squirrel.Eq{"id": chatID})
+	sqlStr, args, err := query.ToSql()
+	if err != nil {
+		log.Printf("Failed to build SQL query: %v", err)
+		return err
+	}
+	log.Printf("Executing SQL: %s, Args: %v", sqlStr, args)
+	err = db.Pool.QueryRow(ctx, sqlStr, args...).Scan(&rawAESKey)
+	if err != nil {
+		log.Printf("Error getting raw_aes_key for chat %d: %v", chatID, err)
+		return err
+	}
+	if rawAESKey == "" {
+		log.Printf("Raw AES key is missing for chat %d", chatID)
+		return errors.New("raw aes key is missing")
+	}
+
+	user, err := cs.UserService.GetUserById(ctx, userID)
+	if err != nil {
+		log.Printf("Error getting user by ID %d: %v", userID, err)
+		return err
+	}
+	if user.PublicKey == nil {
+		log.Printf("Public key is missing for user %d", userID)
+		return errors.New("public key is missing")
+	}
+
+	log.Printf("JWK Public Key for user %d: %s", userID, *user.PublicKey)
+
+	rsaPubKey, err := utils.ParsePublicKeyFromBase64JWK(*user.PublicKey)
+	if err != nil {
+		log.Printf("Error parsing JWK for user %d: %v", userID, err)
+		return err
+	}
+
+	encryptedKey, err := utils.EncryptAESKeyWithRSA(rawAESKey, rsaPubKey)
+	if err != nil {
+		return err
+	}
+
+	insertQuery := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar).
+		Insert("chat_participants").
+		Columns("chat_id", "user_id", "encrypted_chat_key").
+		Values(chatID, userID, encryptedKey)
+	sqlStr, args, err = insertQuery.ToSql()
+	if err != nil {
+		log.Printf("Failed to build SQL query: %v", err)
+		return err
+	}
+	log.Printf("Executing SQL: %s, Args: %v", sqlStr, args)
+	_, err = db.Pool.Exec(ctx, sqlStr, args...)
+	if err != nil {
+		log.Printf("Error adding user %d to chat %d: %v", userID, chatID, err)
+		return err
+	}
+
+	log.Printf("User %d joined chat %d", userID, chatID)
+	return nil
+}
+
+func (cs *chatService) LeaveChannel(ctx context.Context, channelID, userID int) error {
+	isParticipant, err := cs.IsUserInChat(ctx, channelID, userID)
+	if err != nil {
+		log.Printf("Error checking if user %d is in channel %d: %v", userID, channelID, err)
+		return err
+	}
+	if !isParticipant {
+		log.Printf("User %d is not a participant of channel %d", userID, channelID)
+		return errors.New("user is not a participant of the channel")
+	}
+
+	query := squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar).
+		Delete("chat_participants").
+		Where(squirrel.And{
+			squirrel.Eq{"chat_id": channelID},
+			squirrel.Eq{"user_id": userID},
+		})
+	sqlStr, args, err := query.ToSql()
+	if err != nil {
+		log.Printf("Failed to build SQL query: %v", err)
+		return err
+	}
+	log.Printf("Executing SQL: %s, Args: %v", sqlStr, args)
+
+	_, err = db.Pool.Exec(ctx, sqlStr, args...)
+	if err != nil {
+		log.Printf("Error removing user %d from channel %d: %v", userID, channelID, err)
+		return err
+	}
+
+	log.Printf("User %d successfully left channel %d", userID, channelID)
 	return nil
 }

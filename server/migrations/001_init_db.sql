@@ -13,10 +13,11 @@ CREATE TABLE users (
 
 CREATE TABLE chats (
     id SERIAL PRIMARY KEY,
-    type VARCHAR(10) NOT NULL,           --Тип чата ("direct" или "group")
+    type VARCHAR(10) NOT NULL,           --Тип чата ("direct" или "group" или "channel")
     name VARCHAR(100),                   
     created_by INT REFERENCES users(id),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    raw_aes_key TEXT
 );
 
 CREATE TABLE chat_participants (

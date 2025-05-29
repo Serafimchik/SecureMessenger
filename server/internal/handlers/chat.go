@@ -341,3 +341,105 @@ func GetPublicKeys(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
 }
+
+func SearchPublicChannels(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	query := r.URL.Query().Get("query")
+	if query == "" {
+		http.Error(w, "Query parameter is required", http.StatusBadRequest)
+		return
+	}
+	channels, err := chatService.SearchPublicChannels(ctx, query)
+	if err != nil {
+		if errors.Is(err, models.ErrChatNotFound) {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": "No channels found",
+			})
+			return
+		}
+		log.Printf("Error searching public channels: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(channels)
+}
+
+func JoinChat(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	currentUserIDRaw := ctx.Value("user_id")
+	if currentUserIDRaw == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	currentUserID, ok := currentUserIDRaw.(int)
+	if !ok {
+		http.Error(w, "Invalid user ID in context", http.StatusInternalServerError)
+		return
+	}
+	path := r.URL.Path
+	parts := strings.Split(strings.TrimPrefix(path, "/api/channels/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		log.Println("Missing chat ID in URL")
+		http.Error(w, "Missing chat ID in URL", http.StatusBadRequest)
+		return
+	}
+	chatIDStr := parts[0]
+	chatID, err := strconv.Atoi(chatIDStr)
+	if err != nil || chatID <= 0 {
+		log.Printf("Invalid chat ID: %s", chatIDStr)
+		http.Error(w, "Invalid chat ID", http.StatusBadRequest)
+		return
+	}
+	err = chatService.JoinChat(ctx, chatID, currentUserID)
+	if err != nil {
+		log.Printf("Error joining user %d to chat %d: %v", currentUserID, chatID, err)
+		http.Error(w, "Failed to join chat", http.StatusInternalServerError)
+		return
+	}
+	pool.GlobalPool.BroadcastEvent(chatID, "new_chat", map[string]int{
+		"chat_id": chatID,
+	})
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": "Successfully joined chat",
+	})
+}
+
+func LeaveChannel(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	currentUserIDRaw := ctx.Value("user_id")
+	if currentUserIDRaw == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	currentUserID, ok := currentUserIDRaw.(int)
+	if !ok {
+		http.Error(w, "Invalid user ID in context", http.StatusInternalServerError)
+		return
+	}
+	path := r.URL.Path
+	parts := strings.Split(strings.TrimPrefix(path, "/api/channels/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		log.Println("Missing chat ID in URL")
+		http.Error(w, "Missing chat ID in URL", http.StatusBadRequest)
+		return
+	}
+	chatIDStr := parts[0]
+	channelID, err := strconv.Atoi(chatIDStr)
+	err = chatService.LeaveChannel(ctx, channelID, currentUserID)
+	if err != nil {
+		log.Printf("Error leaving channel %d for user %d: %v", channelID, currentUserID, err)
+		if errors.Is(err, errors.New("user is not a participant of the channel")) {
+			http.Error(w, "User is not a participant of the channel", http.StatusBadRequest)
+		} else {
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+		}
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": "Successfully left the channel",
+	})
+}

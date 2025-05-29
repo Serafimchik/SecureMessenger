@@ -110,6 +110,7 @@ func WebSocketHandler(w http.ResponseWriter, r *http.Request) {
 				Name           *string               `json:"name"`
 				Emails         []string              `json:"emails"`
 				EncryptedKeys  []models.EncryptedKey `json:"encrypted_keys"`
+				RawAESKey      *string               `json:"raw_aes_key"`
 			}
 			err := json.Unmarshal([]byte(msg.Content), &createChatReq)
 			if err != nil || createChatReq.Type == "" {
@@ -144,7 +145,7 @@ func WebSocketHandler(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 
-				chatID, err := chatService.CreateChat(r.Context(), userID, recipient.ID, "direct", nil)
+				chatID, err := chatService.CreateChat(r.Context(), userID, recipient.ID, "direct", nil, nil)
 				if err != nil {
 					log.Printf("Error creating direct chat between user %d and recipient %d: %v", userID, recipient.ID, err)
 					continue
@@ -188,7 +189,7 @@ func WebSocketHandler(w http.ResponseWriter, r *http.Request) {
 
 				userIDs = append(userIDs, userID)
 
-				chatID, err := chatService.CreateChat(r.Context(), userID, 0, "group", createChatReq.Name)
+				chatID, err := chatService.CreateChat(r.Context(), userID, 0, "group", createChatReq.Name, nil)
 				if err != nil {
 					log.Printf("Error creating group chat: %v", err)
 					continue
@@ -213,6 +214,45 @@ func WebSocketHandler(w http.ResponseWriter, r *http.Request) {
 					"chat_id": chatID,
 				})
 				log.Printf("Group chat created with ID %d and name %s", chatID, *createChatReq.Name)
+			case "channel":
+				if createChatReq.Name == nil || *createChatReq.Name == "" || len(createChatReq.Emails) == 0 || len(createChatReq.EncryptedKeys) == 0 || createChatReq.RawAESKey == nil {
+					log.Printf("Invalid create_channel request from user %d: name, emails, encrypted keys, and raw_aes_key are required for channel", userID)
+					continue
+				}
+
+				userIDs, err := userService.GetUserIDsByEmails(r.Context(), createChatReq.Emails)
+				if err != nil {
+					log.Printf("Error getting user IDs by emails: %v", err)
+					continue
+				}
+
+				userIDs = append(userIDs, userID)
+
+				chatID, err := chatService.CreateChat(r.Context(), userID, 0, "channel", createChatReq.Name, createChatReq.RawAESKey)
+				if err != nil {
+					log.Printf("Error creating channel: %v", err)
+					continue
+				}
+
+				encryptedKeys := make(map[int]string)
+				for _, key := range createChatReq.EncryptedKeys {
+					user, err := userService.GetUserByEmail(r.Context(), key.Email)
+					if err != nil {
+						log.Printf("Error getting user by email %s: %v", key.Email, err)
+						continue
+					}
+					encryptedKeys[user.ID] = key.EncryptedKey
+				}
+
+				if err := chatService.AddParticipants(r.Context(), chatID, userIDs, encryptedKeys); err != nil {
+					log.Printf("Error adding participants to channel %d: %v", chatID, err)
+					continue
+				}
+
+				clientPool.BroadcastEvent(chatID, "new_chat", map[string]int{
+					"chat_id": chatID,
+				})
+				log.Printf("Channel created with ID %d and name %s", chatID, *createChatReq.Name)
 
 			default:
 				log.Printf("Invalid chat type: %s", createChatReq.Type)

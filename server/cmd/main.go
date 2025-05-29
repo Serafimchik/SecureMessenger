@@ -39,6 +39,9 @@ func main() {
 		r.Post("/api/chats/{chat_id}/participants", handlers.AddParticipant)
 		r.Delete("/api/chats/{chat_id}/participants", handlers.RemoveParticipant)
 		r.Post("/api/users/public-keys", handlers.GetPublicKeys)
+		r.Get("/api/channels/search", handlers.SearchPublicChannels)
+		r.Post("/api/channels/{channelID}/join", handlers.JoinChat)
+		r.Post("/api/channels/{id}/leave", handlers.LeaveChannel)
 	})
 
 	r.Get("/ws", handlers.WebSocketHandler)

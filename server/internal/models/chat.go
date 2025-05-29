@@ -12,6 +12,7 @@ type Chat struct {
 	CreatedAt        time.Time `json:"created_at" db:"created_at"`
 	EncryptedChatKey string    `json:"encrypted_chat_key"`
 	Participants     []User    `json:"participants"`
+	RawAESKey        string    `json:"raw_aes_key,omitempty"`
 }
 
 type ChatParticipant struct {
