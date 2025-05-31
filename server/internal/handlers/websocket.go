@@ -26,6 +26,7 @@ func broadcastToChat(chatID int, eventType string, eventData map[string]interfac
 }
 
 func WebSocketHandler(w http.ResponseWriter, r *http.Request) {
+	log.Printf("Incoming WebSocket request from %s, URL: %s", r.RemoteAddr, r.URL.String())
 	tokenStr := r.URL.Query().Get("token")
 	if tokenStr == "" {
 		http.Error(w, "Missing token", http.StatusUnauthorized)
@@ -104,6 +105,7 @@ func WebSocketHandler(w http.ResponseWriter, r *http.Request) {
 			log.Printf("Message sent to chat %d by user %d (%s) at %s, Message ID: %d", msg.ChatID, userID, username, sentAt, messageID)
 
 		case "create_chat":
+			log.Printf("WEBSOCKET create_chat")
 			var createChatReq struct {
 				RecipientEmail *string               `json:"recipient_email"`
 				Type           string                `json:"type"`
